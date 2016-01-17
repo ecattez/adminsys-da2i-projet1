@@ -10,11 +10,11 @@
 #   - langage de commande
 
 # Les options de la commande :
-# -n (ou --dry-run) : voir ce que la commande s'apprête à faire sans le faire effectivement
-# -h (ou --help)	: accéde à l'aide d'utilisation de la commande
-# -a (ou --add)		[value] : ajoute 1 à n utilisateurs
-# -r (ou --remove)	[value] : supprime 1 à n utilisateurs
-# -m (ou --modify)	[value] : modifie 1 à n utilisateurs
+# -n : voir ce que la commande s'apprête à faire avant de le faire effectivement
+# -h : accéde à l'aide d'utilisation de la commande
+# -a <user> : ajoute 1 à n utilisateurs
+# -r <user> : supprime 1 à n utilisateurs
+# -m <user> : modifie 1 à n utilisateurs
 
 use strict;
 use FindBin '$Bin';
@@ -24,12 +24,12 @@ use Time::HiRes qw(time);
 
 my $root	= $Bin;
 my $usage	= "Usage: $0 <OPTIONS> [VALUES...]\n";
-my $upass	= 'upass';
-my $passwd	= 'passwd';
-my $shadow	= 'shadow';
-my $group	= 'group';
+my $upass	= '/etc/upass';
+my $passwd	= '/etc/passwd';
+my $shadow	= '/etc/shadow';
+my $group	= '/etc/group';
 my ($h, $n, @a, @r, @m);
-GetOptions('h' => \$h, 'n' => \$n,'a=s@' => \@a,'r=s@' => \@r,'m=s@{4}' => \@m);
+GetOptions('h' => \$h, 'n' => \$n,'a=s@' => \@a,'r=s@' => \@r,'m=s@' => \@m) or (show_help() and exit 0);
 
 # Crypte un mot de passe
 sub crypt_password
@@ -46,18 +46,18 @@ sub print_usage
 # Affiche l'aide des options de la commande
 sub print_opt
 {
-	printf "    %-24s : %4s\n", @_;
+	printf "    %-10s: %4s\n", @_;
 }
 
 # Affiche l'aide d'utilisation de la commande
 sub show_help
 {
 	print_usage;
-	print_opt "-n (ou --dry-run)", "voir ce que la commande s'apprête à faire sans le faire effectivement";
-	print_opt "-h (ou --help)", "accéde à l'aide d'utilisation de la commande";
-	print_opt "-a (ou --add) <value>", "ajoute 1 à n utilisateurs";
-	print_opt "-r (ou --remove) <value>", "supprime 1 à n utilisateurs";
-	print_opt "-m (ou --modify) <value>", "modifie 1 à n utilisateurs";
+	print_opt "-n", "voir ce que la commande s'apprête à faire sans le faire effectivement";
+	print_opt "-h", "accéde à l'aide d'utilisation de la commande";
+	print_opt "-a <user>", "ajoute 1 à n utilisateurs";
+	print_opt "-r <user>", "supprime 1 à n utilisateurs";
+	print_opt "-m <user>", "modifie 1 à n utilisateurs";
 }
 
 # Retourne le premier uid disponible
@@ -110,20 +110,29 @@ sub print_in_file
 	close FILE or die "close: $!";
 }
 
+# Récupère la ligne d'un utilisateur dans un fichier
+sub get_in_file
+{
+	my ($file, $login) = @_;
+	
+	# Si le fichier n'existe pas, alors la ligne à récupérer non plus
+	return undef if not (-e $file);
+	
+	open FILE, '<', $file or die "open: $!";
+	while (<FILE>)
+	{
+		return $_ if (/^$login/);
+	}
+	close FILE or die "close: $!";
+	
+	return undef;
+}
+
 # Vérifie si un utilisateur existe, renvoie 1 si oui, 0 sinon
 sub exist_user
 {
 	my $login = $_[0];
-	open PASSWD, '<', $passwd or die "open: $!";
-	while (<PASSWD>)
-	{
-		if (/^$login/)
-		{
-			return 1;
-		}
-	}
-	close PASSWD or die "close: $!";
-	return 0;
+	return defined get_in_file($passwd, $login);
 }
 
 # Crée un utilisateur
@@ -157,11 +166,11 @@ sub create_user
 	# Création du dossier personnel de l'utilisateur
 	make_path($home, {verbose => 0, mode => 0755});
 	# Mise en place des fichiers d'initialisation du shell
-	#system("cp -v /etc/skel/.bash* $home");
+	system("cp -v /etc/skel/.bash* $home");
 	# Attribution des droits
-	#system("chmod -v 0755 $home");
+	system("chmod -v 0755 $home");
 	# Définir le propriétaire
-	#system("chown -vR $login:$login $home");
+	system("chown -vR $login:$login $home");
 }
 
 # Supprime un utilisateur dans un fichier
@@ -221,35 +230,105 @@ sub remove_user
 	}
 }
 
-# Modifie un utilisateur <login, password, home, shell>
+# Saisie et retourne une donnée avec confirmation de saisie
+sub set_and_confirm
+{
+	my @prompt = @_;
+	my @answer;
+	do
+	{
+		print $prompt[0], ': ';
+		$answer[0] = <STDIN>;
+		chomp $answer[0];
+		print $prompt[1], ': ';
+		$answer[1] = <STDIN>;
+		chomp $answer[1];
+		print 'Erreur: les informations saisies sont différentes', "\n" if ($answer[0] ne $answer[1])
+	} while ($answer[0] ne $answer[1]);
+	return $answer[0];
+}
+
+# Modifie un utilisateur <password, home, shell>
 sub modify_user
 {
-
+	my $login = $_[0];
+	my $userInfo = get_in_file($passwd, $login);
+	if ($userInfo)
+	{
+		my @info = split(':', $userInfo);
+		if (yes_no('Modifier le mot de passe ?'))
+		{
+			# On cache l'affichage du prompt
+			system('stty','-echo');
+			my @infoShadow = split(':', get_in_file($shadow, $login));
+			my $pass;
+			do
+			{
+				print 'Saisir mot de passe actuel: ';
+				$pass = <STDIN>;
+				chomp $pass;
+				$pass = crypt_password($pass);
+				print 'Mot de passe incorrect', "\n" if ($pass ne $infoShadow[1]);
+			} while ($pass ne $infoShadow[1]);
+			$infoShadow[1] = set_and_confirm('Nouveau mot de passe', 'Confirmer nouveau mot de passe');
+			# On affiche de nouveau le prompt
+			system('stty','echo');
+		}
+		if (yes_no('Modifier le répertoire personnel ?'))
+		{
+			print "Répertoire actuel: $info[5]\n";
+			$info[5] = set_and_confirm('Nouveau répertoire', 'Confirmer nouveau répertoire');
+		}
+		if (yes_no('Modifier le langage de commande ?'))
+		{
+			print "Langage de commande actuel: $info[6]\n";
+			$info[6] = set_and_confirm('Nouveau langage de commande', 'Confirmer nouveau langage de commande');
+		}
+		# "$login:x:$uid:$gid::$home:$shell"
+	}
 }
 
-# Test de commande sans effet
+# Question oui/non
+sub yes_no
+{
+	my $answer;
+	my $question = $_[0];
+	do {
+		print $question, ' (y/n) ';
+		$answer = lc <STDIN>;
+		chomp $answer;
+	} while not ($answer eq 'y' or $answer eq 'n');
+	return $answer eq 'y';
+}
+
+# Indique ce que la commande s'apprête à faire (option -n) avant de l'exécuter
 sub dry_run
 {
-
+	my $message = $_[0];
+	print $message, "\n";
+	
+	# On s'arrête immédiatement si l'utilisateur répond non pour continuer la commande
+	exit 0 if not yes_no('Voulez-vous continuer ?');
 }
+
+$SIG{INT} = sub { system('stty','echo'); exit(0); };
 
 if ($h)
 {
 	show_help();
 }
-elsif ($n)
-{
-
-}
 elsif (@a)
 {
+	dry_run("Vous vous apprêtez à ajouter 1 ou plusieurs utilisateurs") if ($n);
 	foreach (@a)
 	{	
 		create_user $_;
 	}
+	print "Les mots de passes temporaires des utilisateurs sont disponibles dans le fichier upass\n";
 }
 elsif (@r)
 {
+	dry_run("Vous vous apprêtez à supprimer 1 ou plusieurs utilisateurs") if ($n);
 	foreach (@r)
 	{
 		remove_user $_;
@@ -257,16 +336,20 @@ elsif (@r)
 }
 elsif (@m)
 {
+	dry_run("Vous vous apprêtez à modifier 1 ou plusieurs utilisateurs") if ($n);
 	foreach (@m)
 	{
 		modify_user $_;
 	}
 }
+# On envoit le contenu d'un fichier sur la ligne de commande
 else
 {
+	dry_run("Vous vous apprêtez à ajouter 1 ou plusieurs utilisateurs") if ($n);
 	while(<STDIN>)
 	{
 		chomp;
 		create_user $_;
 	}
+	print "Les mots de passes temporaires des utilisateurs sont disponibles dans le fichier upass\n";
 }
