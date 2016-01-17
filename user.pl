@@ -18,16 +18,17 @@
 
 use strict;
 use FindBin '$Bin';
+use File::Copy;
 use File::Path qw(make_path remove_tree);
 use Getopt::Long;
 use Time::HiRes qw(time);
 
 my $root	= $Bin;
 my $usage	= "Usage: $0 <OPTIONS> [VALUES...]\n";
-my $upass	= '/etc/upass';
-my $passwd	= '/etc/passwd';
-my $shadow	= '/etc/shadow';
-my $group	= '/etc/group';
+my $upass	= 'upass';
+my $passwd	= 'passwd';
+my $shadow	= 'shadow';
+my $group	= 'group';
 my ($h, $n, @a, @r, @m);
 GetOptions('h' => \$h, 'n' => \$n,'a=s@' => \@a,'r=s@' => \@r,'m=s@' => \@m) or (show_help() and exit 0);
 
@@ -135,6 +136,18 @@ sub exist_user
 	return defined get_in_file($passwd, $login);
 }
 
+# Crée le répertoire personnel de l'utilisateur
+sub create_home
+{
+	my $home = $_[0];
+	# Création du dossier personnel de l'utilisateur
+	make_path($home, {verbose => 0, mode => 0755});
+	# Mise en place des fichiers d'initialisation du shell
+	system("cp -v /etc/skel/.bash* $home");
+	# Définir le propriétaire
+	system("chown -vR $login:$login $home");
+}
+
 # Crée un utilisateur
 sub create_user
 {
@@ -163,14 +176,7 @@ sub create_user
 		print_in_file($key, $value);
 	}
 	
-	# Création du dossier personnel de l'utilisateur
-	make_path($home, {verbose => 0, mode => 0755});
-	# Mise en place des fichiers d'initialisation du shell
-	system("cp -v /etc/skel/.bash* $home");
-	# Attribution des droits
-	system("chmod -v 0755 $home");
-	# Définir le propriétaire
-	system("chown -vR $login:$login $home");
+	create_home($home);
 }
 
 # Supprime un utilisateur dans un fichier
@@ -270,21 +276,36 @@ sub modify_user
 				$pass = crypt_password($pass);
 				print 'Mot de passe incorrect', "\n" if ($pass ne $infoShadow[1]);
 			} while ($pass ne $infoShadow[1]);
-			$infoShadow[1] = set_and_confirm('Nouveau mot de passe', 'Confirmer nouveau mot de passe');
+			
+			$pass = set_and_confirm('Nouveau mot de passe', 'Confirmer nouveau mot de passe');
 			# On affiche de nouveau le prompt
 			system('stty','echo');
+			
+			$infoShadow[1] = crypt_password($pass);
+			remove_user_from_file($shadow, $login);
+			$" = ':';
+			print_in_file($shadow, "@infoShadow");
+			$" = '';
+			
 		}
 		if (yes_no('Modifier le répertoire personnel ?'))
 		{
 			print "Répertoire actuel: $info[5]\n";
-			$info[5] = set_and_confirm('Nouveau répertoire', 'Confirmer nouveau répertoire');
+			my $home = set_and_confirm('Nouveau répertoire', 'Confirmer nouveau répertoire');
+			make_path($home, {verbose => 0, mode => 0755});
+			move($info[5], $home);
+			system("chown -vR $login:$login $home");
+			$info[5] = $home;
 		}
 		if (yes_no('Modifier le langage de commande ?'))
 		{
-			print "Langage de commande actuel: $info[6]\n";
+			print "Langage de commande actuel: $info[6]";
 			$info[6] = set_and_confirm('Nouveau langage de commande', 'Confirmer nouveau langage de commande');
 		}
-		# "$login:x:$uid:$gid::$home:$shell"
+		remove_user_from_file($passwd, $login);
+		$" = ':';
+		print_in_file($passwd, "@info");
+		$" = '';
 	}
 }
 
