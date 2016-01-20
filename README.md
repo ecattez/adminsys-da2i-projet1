@@ -6,6 +6,8 @@
 
 **Etat**: en développement
 
+[**Sujet de TP**](http://cristal.univ-lille.fr/~lhoussai/e/da2i/sujet1.txt)
+
 ---------------------
 Script PERL qui administre des utilisateurs sur la machine courante.
 
