@@ -12,6 +12,7 @@
 # Les options de la commande :
 # -n : voir ce que la commande s'apprête à faire avant de le faire effectivement
 # -h : accéde à l'aide d'utilisation de la commande
+# -f : force la suppression
 # -a <user> : ajoute 1 à n utilisateurs
 # -r <user> : supprime 1 à n utilisateurs
 # -m <user> : modifie 1 à n utilisateurs
@@ -25,41 +26,30 @@ use Time::HiRes qw(time);
 
 my $root	= $Bin;
 my $usage	= "Usage: $0 <OPTIONS> [VALUES...]\n";
-my $upass	= 'upass';
-my $passwd	= 'passwd';
-my $shadow	= 'shadow';
-my $group	= 'group';
-my ($h, $n, @a, @r, @m);
-GetOptions('h' => \$h, 'n' => \$n,'a=s@' => \@a,'r=s@' => \@r,'m=s@' => \@m) or (show_help() and exit 0);
-
-# Crypte un mot de passe
-sub crypt_password
-{
-	return crypt($_[0], '$6$sOmEsAlT');
-}
+my $upass	= '/etc/upass';
+my $passwd	= '/etc/passwd';
+my $shadow	= '/etc/shadow';
+my $group	= '/etc/group';
+my ($h, $n, $f, @a, @r, @m);
+GetOptions('h' => \$h, 'n' => \$n, 'f' => \$f, 'a=s@' => \@a, 'r=s@' => \@r, 'm=s@' => \@m) or show_help();
 
 # Affiche l'usage de la commande
-sub print_usage
-{
-	print $usage;
-}
+sub print_usage { print $usage; }
 
 # Affiche l'aide des options de la commande
-sub print_opt
-{
-	printf "    %-10s: %4s\n", @_;
-}
+sub print_opt { printf "    %-10s: %4s\n", @_; }
 
-# Affiche l'aide d'utilisation de la commande
-sub show_help
-{
-	print_usage;
-	print_opt "-n", "voir ce que la commande s'apprête à faire sans le faire effectivement";
-	print_opt "-h", "accéde à l'aide d'utilisation de la commande";
-	print_opt "-a <user>", "ajoute 1 à n utilisateurs";
-	print_opt "-r <user>", "supprime 1 à n utilisateurs";
-	print_opt "-m <user>", "modifie 1 à n utilisateurs";
-}
+# Crypte un mot de passe
+sub crypt_password { return crypt($_[0], '$6$sOmEsAlT'); }
+
+# Retourne le répertoire personnel par défaut
+sub get_default_home { return $root . '/home/' . $_[0]; }
+
+# Retourne le shell par défaut
+sub get_default_shell { return '/bin/bash'; }
+
+# Retourne un mot de passe aléatoire
+sub get_random_password { return crypt(srand, 'random'); }
 
 # Retourne le premier uid disponible
 sub get_available_uid
@@ -83,23 +73,16 @@ sub get_available_gid
 	return $gid;
 }
 
-# Retourne le répertoire personnel par défaut
-sub get_default_home
+# Affiche l'aide d'utilisation de la commande
+sub show_help
 {
-	my $home = $root . '/home/';
-	return $home . $_[0];
-}
-
-# Retourne le shell par défaut
-sub get_default_shell
-{
-	return '/bin/bash';
-}
-
-# Retourne un mot de passe aléatoire
-sub get_random_password
-{
-	return crypt(srand, 'random');
+	print_usage;
+	print_opt "-n", "voir ce que la commande s'apprête à faire sans le faire effectivement";
+	print_opt "-h", "accéde à l'aide d'utilisation de la commande";
+	print_opt "-a <user>", "ajoute 1 à n utilisateurs";
+	print_opt "-r <user>", "supprime 1 à n utilisateurs";
+	print_opt "-m <user>", "modifie 1 à n utilisateurs";
+	exit 0;
 }
 
 # Insère une ligne dans un fichier
@@ -130,16 +113,12 @@ sub get_in_file
 }
 
 # Vérifie si un utilisateur existe, renvoie 1 si oui, 0 sinon
-sub exist_user
-{
-	my $login = $_[0];
-	return defined get_in_file($passwd, $login);
-}
+sub exist_user { return defined get_in_file($passwd, $_[0]); }
 
 # Crée le répertoire personnel de l'utilisateur
 sub create_home
 {
-	my $home = $_[0];
+	my ($login, $home) = @_;
 	# Création du dossier personnel de l'utilisateur
 	make_path($home, {verbose => 0, mode => 0755});
 	# Mise en place des fichiers d'initialisation du shell
@@ -165,18 +144,20 @@ sub create_user
 	# 2) Ecrit dans le fichier passwd
 	# 3) Ecrit dans le fichier shadow (le password est crypté)
 	# 4) Ecrit dans le fichier group
+	
+	my $nbJours = sprintf("%.0f", time/86400);
 	my %hash;
 	$hash{$upass} = "$login:$password";
 	$hash{$passwd} = "$login:x:$uid:$gid::$home:$shell";
-	$hash{$shadow} = $login . ':' . crypt_password($password) . ':' . time . ':0:99999:7:::';
-	$hash{$group} = "$login:x:$gid:";
+	$hash{$shadow} = $login . ':' . crypt_password($password) . ':' . $nbJours . ':0:99999:7:::';
+	$hash{$group} = "$login:x:$gid";
 	
 	while (my ($key, $value) = each %hash)
 	{
 		print_in_file($key, $value);
 	}
 	
-	create_home($home);
+	create_home($login, $home);
 }
 
 # Supprime un utilisateur dans un fichier
@@ -213,23 +194,27 @@ sub remove_user_from_file
 sub remove_user
 {
 	my $login = $_[0];
-	my $user = remove_user_from_file($passwd, $login);
 	
-	# Si l'utilisateur est vide, c'est qu'il n'existe pas
-	if ($user)
+	if (exist_user($login))
 	{
-		my @info = split(':', $user);
-		my $home = $info[5];
-	
-		my @files = ($shadow, $group);
-		foreach (@files)
+		# Pour supprimer un utilisateur, il faut soit l'option -f ou confirmer la suppression
+		if (($f || yes_no("Etes-vous sûr de vouloir supprimer $login ?")))
 		{
-			remove_user_from_file($_, $login);
-		}
+			my $user = remove_user_from_file($passwd, $login);
+			my @info = split(':', $user);
+			my $home = $info[5];
 	
-		# Suppression du répertoire personnel de l'utilisateur
-		remove_tree($home);
+			my @files = ($shadow, $group, $upass);
+			foreach (@files)
+			{
+				remove_user_from_file($_, $login);
+			}
+	
+			# Suppression du répertoire personnel de l'utilisateur
+			remove_tree($home);
+		}
 	}
+	# Si l'utilisateur est vide, c'est qu'il n'existe pas
 	else
 	{
 		print "Impossible de supprimer $login. Cet utilisateur n'existe pas ou a été supprimé.\n";
@@ -307,6 +292,11 @@ sub modify_user
 		print_in_file($passwd, "@info");
 		$" = '';
 	}
+	# Si l'utilisateur est vide, c'est qu'il n'existe pas
+	else
+	{
+		print "Impossible de modifier $login. Cet utilisateur n'existe pas ou a été supprimé.\n";
+	}
 }
 
 # Question oui/non
@@ -327,50 +317,39 @@ sub dry_run
 {
 	my $message = $_[0];
 	print $message, "\n";
-	
 	# On s'arrête immédiatement si l'utilisateur répond non pour continuer la commande
-	exit 0 if not yes_no('Voulez-vous continuer ?');
+	exit 0 unless yes_no('Voulez-vous continuer ?');
 }
-
-$SIG{INT} = sub { system('stty','echo'); exit(0); };
 
 if ($h)
 {
 	show_help();
 }
-elsif (@a)
-{
-	dry_run("Vous vous apprêtez à ajouter 1 ou plusieurs utilisateurs") if ($n);
-	foreach (@a)
-	{	
-		create_user $_;
-	}
-	print "Les mots de passes temporaires des utilisateurs sont disponibles dans le fichier upass\n";
-}
 elsif (@r)
 {
 	dry_run("Vous vous apprêtez à supprimer 1 ou plusieurs utilisateurs") if ($n);
-	foreach (@r)
-	{
-		remove_user $_;
-	}
+	foreach (@r) { remove_user $_; }
 }
 elsif (@m)
 {
 	dry_run("Vous vous apprêtez à modifier 1 ou plusieurs utilisateurs") if ($n);
-	foreach (@m)
-	{
-		modify_user $_;
-	}
+	foreach (@m) { modify_user $_; }
 }
-# On envoit le contenu d'un fichier sur la ligne de commande
 else
 {
 	dry_run("Vous vous apprêtez à ajouter 1 ou plusieurs utilisateurs") if ($n);
-	while(<STDIN>)
+	if (@a)
 	{
-		chomp;
-		create_user $_;
+		foreach (@a) { create_user $_; }
+	}
+	# On envoit le contenu d'un fichier sur la ligne de commande
+	else
+	{
+		while(<STDIN>)
+		{
+			chomp;
+			create_user $_;
+		}
 	}
 	print "Les mots de passes temporaires des utilisateurs sont disponibles dans le fichier upass\n";
 }
