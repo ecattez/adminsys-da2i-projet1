@@ -10,6 +10,12 @@
 
 [**Mécanisme de création d'un utilisateur UNIX**](http://www.linux-perl-c.lami20j.fr/contenu/affiche-linux_tuto-4-creation-manuelle-d-un-utilisateur-:-le-mecanisme.html)
 
+**Cloner le projet**
+
+```
+git clone https://github.com/ecattez/adminsys-da2i-projet1.git
+```
+
 ---------------------
 
 ## Synopsys
